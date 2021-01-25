@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+"""Factory functions for loading hotword engines - both internal and plugins.
+"""
 from time import time, sleep
 import os
 import platform
@@ -24,13 +26,16 @@ from contextlib import suppress
 from glob import glob
 from os.path import dirname, exists, join, abspath, expanduser, isfile, isdir
 from shutil import rmtree
-from threading import Timer, Event, Thread
+from threading import Timer, Thread
 from urllib.error import HTTPError
 
 from petact import install_package
 
 from mycroft.configuration import Configuration, LocalConf, USER_CONFIG
 from mycroft.util.log import LOG
+from mycroft.util.monotonic_event import MonotonicEvent
+from mycroft.util.plugins import load_plugin
+
 
 RECOGNIZER_DIR = join(abspath(dirname(__file__)), "recognizer")
 INIT_TIMEOUT = 10  # In seconds
@@ -44,38 +49,80 @@ class NoModelAvailable(Exception):
     pass
 
 
+def msec_to_sec(msecs):
+    """Convert milliseconds to seconds.
+
+    Arguments:
+        msecs: milliseconds
+
+    Returns:
+        int: input converted from milliseconds to seconds
+    """
+    return msecs / 1000
+
+
 class HotWordEngine:
+    """Hotword/Wakeword base class to be implemented by all wake word plugins.
+
+    Arguments:
+        key_phrase (str): string representation of the wake word
+        config (dict): Configuration block for the specific wake word
+        lang (str): language code (BCP-47)
+    """
     def __init__(self, key_phrase="hey mycroft", config=None, lang="en-us"):
         self.key_phrase = str(key_phrase).lower()
-        # rough estimate 1 phoneme per 2 chars
-        self.num_phonemes = len(key_phrase) / 2 + 1
+
         if config is None:
             config = Configuration.get().get("hot_words", {})
             config = config.get(self.key_phrase, {})
         self.config = config
+
+        # rough estimate 1 phoneme per 2 chars
+        self.num_phonemes = len(key_phrase) / 2 + 1
+        phoneme_duration = msec_to_sec(config.get('phoneme_duration', 120))
+        self.expected_duration = self.num_phonemes * phoneme_duration
+
         self.listener_config = Configuration.get().get("listener", {})
         self.lang = str(self.config.get("lang", lang)).lower()
 
     def found_wake_word(self, frame_data):
+        """Check if wake word has been found.
+
+        Checks if the wake word has been found. Should reset any internal
+        tracking of the wake word state.
+
+        Arguments:
+            frame_data (binary data): Deprecated. Audio data for large chunk
+                                      of audio to be processed. This should not
+                                      be used to detect audio data instead
+                                      use update() to incrementaly update audio
+        Returns:
+            bool: True if a wake word was detected, else False
+        """
         return False
 
     def update(self, chunk):
-        pass
+        """Updates the hotword engine with new audio data.
+
+        The engine should process the data and update internal trigger state.
+
+        Arguments:
+            chunk (bytes): Chunk of audio data to process
+        """
 
     def stop(self):
-        """ Perform any actions needed to shut down the hot word engine.
+        """Perform any actions needed to shut down the wake word engine.
 
-            This may include things such as unload loaded data or shutdown
-            external processess.
+        This may include things such as unloading data or shutdown
+        external processess.
         """
-        pass
 
 
 class PocketsphinxHotWord(HotWordEngine):
-    """Hotword engine using PocketSphinx.
+    """Wake word engine using PocketSphinx.
 
     PocketSphinx is very general purpose but has a somewhat high error rate.
-    The key advantage is to be able to specify the wakeword with phonemes.
+    The key advantage is to be able to specify the wake word with phonemes.
     """
     def __init__(self, key_phrase="hey mycroft", config=None, lang="en-us"):
         super().__init__(key_phrase, config, lang)
@@ -100,9 +147,16 @@ class PocketsphinxHotWord(HotWordEngine):
         return file_name
 
     def create_config(self, dict_name, config):
+        """If language config doesn't exist then
+        we use default language (english) config as a fallback.
+        """
         model_file = join(RECOGNIZER_DIR, 'model', self.lang, 'hmm')
         if not exists(model_file):
-            LOG.error('PocketSphinx model not found at ' + str(model_file))
+            LOG.error(
+                'PocketSphinx model not found at "{}". '.format(model_file) +
+                'Falling back to en-us model'
+            )
+            model_file = join(RECOGNIZER_DIR, 'model', 'en-us', 'hmm')
         config.set_string('-hmm', model_file)
         config.set_string('-dict', dict_name)
         config.set_string('-keyphrase', self.key_phrase)
@@ -127,7 +181,7 @@ class PocketsphinxHotWord(HotWordEngine):
 
 
 class PreciseHotword(HotWordEngine):
-    """Precice is the default wakeword engine for mycroft.
+    """Precise is the default wake word engine for Mycroft.
 
     Precise is developed by Mycroft AI and produces quite good wake word
     spotting when trained on a decent dataset.
@@ -274,7 +328,7 @@ class PreciseHotword(HotWordEngine):
 
 
 class SnowboyHotWord(HotWordEngine):
-    """Snowboy is a thirdparty hotword engine providing an easy training and
+    """Snowboy is a thirdparty wake word engine providing an easy training and
     testing interface.
     """
     def __init__(self, key_phrase="hey mycroft", config=None, lang="en-us"):
@@ -299,7 +353,7 @@ class SnowboyHotWord(HotWordEngine):
 
     def found_wake_word(self, frame_data):
         wake_word = self.snowboy.detector.RunDetection(frame_data)
-        return wake_word == 1
+        return wake_word >= 1
 
 
 class PorcupineHotWord(HotWordEngine):
@@ -373,7 +427,21 @@ class PorcupineHotWord(HotWordEngine):
             self.porcupine.delete()
 
 
+def load_wake_word_plugin(module_name):
+    """Wrapper function for loading wake word plugin.
+
+    Arguments:
+        (str) Mycroft wake word module name from config
+    """
+    return load_plugin('mycroft.plugin.wake_word', module_name)
+
+
 class HotWordFactory:
+    """Factory class instantiating the configured Hotword engine.
+
+    The factory can select between a range of built-in Hotword engines and also
+    from Hotword engine plugins.
+    """
     CLASSES = {
         "pocketsphinx": PocketsphinxHotWord,
         "precise": PreciseHotword,
@@ -385,12 +453,17 @@ class HotWordFactory:
     def load_module(module, hotword, config, lang, loop):
         LOG.info('Loading "{}" wake word via {}'.format(hotword, module))
         instance = None
-        complete = Event()
+        complete = MonotonicEvent()
 
         def initialize():
             nonlocal instance, complete
             try:
-                clazz = HotWordFactory.CLASSES[module]
+                if module in HotWordFactory.CLASSES:
+                    clazz = HotWordFactory.CLASSES[module]
+                else:
+                    clazz = load_wake_word_plugin(module)
+                    LOG.info('Loaded the Wake Word plugin {}'.format(module))
+
                 instance = clazz(hotword, config, lang=lang)
             except TriggerReload:
                 complete.set()
@@ -418,7 +491,7 @@ class HotWordFactory:
                        lang="en-us", loop=None):
         if not config:
             config = Configuration.get()['hotwords']
-        config = config[hotword]
+        config = config.get(hotword) or config["hey mycroft"]
 
         module = config.get("module", "precise")
         return cls.load_module(module, hotword, config, lang, loop) or \

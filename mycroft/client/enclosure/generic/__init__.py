@@ -15,7 +15,6 @@
 import subprocess
 import time
 import sys
-from alsaaudio import Mixer
 from threading import Thread, Timer
 
 import mycroft.dialog
@@ -81,7 +80,7 @@ class EnclosureGeneric(Enclosure):
     def speak(self, text):
         self.bus.emit(Message("speak", {'utterance': text}))
 
-    def _handle_pairing_complete(self, Message):
+    def _handle_pairing_complete(self, _):
         """
         Handler for 'mycroft.paired', unmutes the mic after the pairing is
         complete.

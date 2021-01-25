@@ -1018,7 +1018,7 @@ def show_skills(skills):
             scr.addstr(curses.LINES - 1, 0,
                        center(23) + "Press any key to continue", CLR_HEADING)
             scr.refresh()
-            scr.get_wch()  # blocks
+            wait_for_any_key()
             prepare_page()
         elif row == curses.LINES - 2:
             # Reached bottom of screen, start at top and move output to a
@@ -1063,6 +1063,21 @@ def _get_cmd_param(cmd, keyword):
     else:
         parts = cmd.split(" ")
         return parts[-1]
+
+
+def wait_for_any_key():
+    """Block until key is pressed.
+
+    This works around curses.error that can occur on old versions of ncurses.
+    """
+    while True:
+        try:
+            scr.get_wch()  # blocks
+        except curses.error:
+            # Loop if get_wch throws error
+            time.sleep(0.05)
+        else:
+            break
 
 
 def handle_cmd(cmd):
@@ -1142,7 +1157,8 @@ def handle_cmd(cmd):
 
         if message:
             show_skills(message.data)
-            scr.get_wch()  # blocks
+            wait_for_any_key()
+
             screen_mode = SCR_MAIN
             set_screen_dirty()
     elif "deactivate" in cmd:
@@ -1319,7 +1335,11 @@ def gui_main(stdscr):
                     # Treat this as an utterance
                     bus.emit(Message("recognizer_loop:utterance",
                                      {'utterances': [line.strip()],
-                                      'lang': config.get('lang', 'en-us')}))
+                                      'lang': config.get('lang', 'en-us')},
+                                     {'client_name': 'mycroft_cli',
+                                      'source': 'debug_cli',
+                                      'destination': ["skills"]}
+                                     ))
                 hist_idx = -1
                 line = ""
             elif code == 16 or code == 545:  # Ctrl+P or Ctrl+Left (Previous)
@@ -1409,7 +1429,10 @@ def simple_cli():
             print("Input (Ctrl+C to quit):")
             line = sys.stdin.readline()
             bus.emit(Message("recognizer_loop:utterance",
-                             {'utterances': [line.strip()]}))
+                             {'utterances': [line.strip()]},
+                             {'client_name': 'mycroft_simple_cli',
+                              'source': 'debug_cli',
+                              'destination': ["skills"]}))
     except KeyboardInterrupt as e:
         # User hit Ctrl+C to quit
         print("")

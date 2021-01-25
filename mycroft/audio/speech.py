@@ -22,7 +22,7 @@ from mycroft.tts import TTSFactory
 from mycroft.util import check_for_signal
 from mycroft.util.log import LOG
 from mycroft.messagebus.message import Message
-from mycroft.tts.remote_tts import RemoteTTSTimeoutException
+from mycroft.tts.remote_tts import RemoteTTSException
 from mycroft.tts.mimic_tts import Mimic
 
 bus = None  # Mycroft messagebus connection
@@ -43,6 +43,14 @@ def handle_speak(event):
     config = Configuration.get()
     Configuration.set_config_update_handlers(bus)
     global _last_stop_signal
+
+    # if the message is targeted and audio is not the target don't
+    # don't synthezise speech
+    event.context = event.context or {}
+    if event.context.get('destination') and not \
+            ('debug_cli' in event.context['destination'] or
+             'audio' in event.context['destination']):
+        return
 
     # Get conversation ID
     if event.context and 'ident' in event.context:
@@ -119,24 +127,38 @@ def mute_and_speak(utterance, ident, listen=False):
     LOG.info("Speak: " + utterance)
     try:
         tts.execute(utterance, ident, listen)
-    except RemoteTTSTimeoutException as e:
+    except RemoteTTSException as e:
         LOG.error(e)
         mimic_fallback_tts(utterance, ident, listen)
     except Exception as e:
         LOG.error('TTS execution failed ({})'.format(repr(e)))
 
 
-def mimic_fallback_tts(utterance, ident, listen):
+def _get_mimic_fallback():
+    """Lazily initializes the fallback TTS if needed."""
     global mimic_fallback_obj
-    # fallback if connection is lost
-    config = Configuration.get()
-    tts_config = config.get('tts', {}).get("mimic", {})
-    lang = config.get("lang", "en-us")
     if not mimic_fallback_obj:
-        mimic_fallback_obj = Mimic(lang, tts_config)
-    tts = mimic_fallback_obj
+        config = Configuration.get()
+        tts_config = config.get('tts', {}).get("mimic", {})
+        lang = config.get("lang", "en-us")
+        tts = Mimic(lang, tts_config)
+        tts.validator.validate()
+        tts.init(bus)
+        mimic_fallback_obj = tts
+
+    return mimic_fallback_obj
+
+
+def mimic_fallback_tts(utterance, ident, listen):
+    """Speak utterance using fallback TTS if connection is lost.
+
+    Arguments:
+        utterance (str): sentence to speak
+        ident (str): interaction id for metrics
+        listen (bool): True if interaction should end with mycroft listening
+    """
+    tts = _get_mimic_fallback()
     LOG.debug("Mimic fallback, utterance : " + str(utterance))
-    tts.init(bus)
     tts.execute(utterance, ident, listen)
 
 

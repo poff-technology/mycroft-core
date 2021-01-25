@@ -40,10 +40,11 @@ function help() {
     echo "  cli                      the Command Line Interface"
     echo "  unittest                 run mycroft-core unit tests (requires pytest)"
     echo "  skillstest               run the skill autotests for all skills (requires pytest)"
+    echo "  vktest                   run the Voight Kampff integration test suite"
     echo
     echo "Util COMMANDs:"
     echo "  audiotest                attempt simple audio validation"
-    echo "  audioaccuracytest        more complex audio validation"
+    echo "  wakewordtest             test selected wakeword engine"
     echo "  sdkdoc                   generate sdk documentation"
     echo
     echo "Options:"
@@ -67,7 +68,7 @@ function name-to-script-path() {
         "voice")             _module="mycroft.client.speech" ;;
         "cli")               _module="mycroft.client.text" ;;
         "audiotest")         _module="mycroft.util.audio_test" ;;
-        "audioaccuracytest") _module="mycroft.audio-accuracy-test" ;;
+        "wakewordtest")      _module="test.wake_word" ;;
         "enclosure")         _module="mycroft.client.enclosure" ;;
 
         *)
@@ -236,10 +237,13 @@ case ${_opt} in
         source-venv
         pytest test/integrationtests/skills/discover_tests.py "$@"
         ;;
+    "vktest")
+        source "$DIR/bin/mycroft-skill-testrunner" vktest "$@"
+        ;;
     "audiotest")
         launch-process ${_opt}
         ;;
-    "audioaccuracytest")
+    "wakewordtest")
         launch-process ${_opt}
         ;;
     "sdkdoc")
